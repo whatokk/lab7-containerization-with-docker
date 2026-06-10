@@ -1,0 +1,93 @@
+name: Lab7 Docker Containerization
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  docker-containerization:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Step 1 verify Docker environment
+        run: |
+          docker version | tee docker-version.txt
+
+      - name: Step 3 build Docker image
+        run: |
+          docker build -t cloud-lab-image:v1 . | tee docker-build.txt
+          docker images cloud-lab-image:v1 | tee docker-images.txt
+
+      - name: Step 4 and 5 run container and access web server
+        run: |
+          docker run -d -p 8080:80 --name my-web-container cloud-lab-image:v1
+          sleep 3
+          curl -fsS http://127.0.0.1:8080 | tee web-before-source-edit.html
+
+      - name: Step 6 test container immutability
+        run: |
+          cp index.html index-before-edit.html
+          sed -i 's/Deployment Success/Deployment Updated/g' index.html
+          sed -i 's/#f4f4f9/#fff7ed/g' index.html
+          curl -fsS http://127.0.0.1:8080 | tee web-after-source-edit.html
+          if grep -q "Deployment Updated" web-after-source-edit.html; then
+            echo "The running container unexpectedly changed after editing source." | tee immutability-result.txt
+            exit 1
+          fi
+          echo "The running container did not change after editing source. The image is an immutable snapshot." | tee immutability-result.txt
+
+      - name: Step 7 explore container interior
+        run: |
+          docker exec my-web-container ls /usr/share/nginx/html/ | tee container-ls.txt
+          docker exec my-web-container cat /usr/share/nginx/html/index.html | tee container-index.html
+
+      - name: Step 8 monitor cloud resource usage
+        run: |
+          docker stats --no-stream my-web-container | tee docker-stats.txt
+
+      - name: Step 9 scale service and test port conflict
+        run: |
+          docker run -d -p 8081:80 --name second-container cloud-lab-image:v1
+          sleep 3
+          curl -fsS http://127.0.0.1:8081 | tee second-container.html
+          set +e
+          docker run -d -p 8080:80 --name third-container cloud-lab-image:v1 2> port-conflict.txt
+          conflict_status=$?
+          set -e
+          cat port-conflict.txt
+          if [ "$conflict_status" -eq 0 ]; then
+            echo "Expected port conflict did not happen."
+            exit 1
+          fi
+
+      - name: Step 10 cleanup cloud resources
+        if: always()
+        run: |
+          docker stop my-web-container second-container 2>/dev/null || true
+          docker rm my-web-container second-container third-container 2>/dev/null || true
+          docker ps | tee docker-ps-after-cleanup.txt
+
+      - name: Upload experiment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab7-docker-evidence
+          path: |
+            docker-version.txt
+            docker-build.txt
+            docker-images.txt
+            web-before-source-edit.html
+            index-before-edit.html
+            index.html
+            web-after-source-edit.html
+            immutability-result.txt
+            container-ls.txt
+            container-index.html
+            docker-stats.txt
+            second-container.html
+            port-conflict.txt
+            docker-ps-after-cleanup.txt
